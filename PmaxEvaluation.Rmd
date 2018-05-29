@@ -1,30 +1,526 @@
 ---
-title: "Pmax Evaluation"
-author: "Shawn Gilroy"
-date: "5/29/2018"
-output: html_document
+title: "P<sub>MAX</sub> Comparisons"
+author: "Shawn Gilroy <shawnpgilroy@gmail.com>"
+date: "5/27/2018"
+output:
+  pdf_document: default
+  html_document: default
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+In this document, various methods for assessing indexing model slope are demonstrated and reviewed. Unless stated otherwise, each of these methods are presented and reviewed with respect to the Exponential model of demand. Individual methods are reviewed and evaluated here.
+
+```{r setup, include=FALSE, cache=TRUE}
+# Ben Bolker's port from GSL
+# GPLv3
+# 
+# z = input
+# b = branch (principal, by default)
+# eps = machine error
+# min-imag = imaginary value
+lambertW = function(z,b=0,maxiter=10,eps=.Machine$double.eps,
+                    min.imag=1e-9) {
+  if (any(round(Re(b)) != b))
+    stop("branch number for W must be an integer")
+  if (!is.complex(z) && any(z<0)) z=as.complex(z)
+  ## series expansion about -1/e
+  ##
+  ## p = (1 - 2*abs(b)).*sqrt(2*e*z + 2);
+  ## w = (11/72)*p;
+  ## w = (w - 1/3).*p;
+  ## w = (w + 1).*p - 1
+  ##
+  ## first-order version suffices:
+  ##
+  w = (1 - 2*abs(b))*sqrt(2*exp(1)*z + 2) - 1
+  ## asymptotic expansion at 0 and Inf
+  ##
+  v = log(z + as.numeric(z==0 & b==0)) + 2*pi*b*1i;
+  v = v - log(v + as.numeric(v==0))
+  ## choose strategy for initial guess
+  ##
+  c = abs(z + exp(-1));
+  c = (c > 1.45 - 1.1*abs(b));
+  c = c | (b*Im(z) > 0) | (!Im(z) & (b == 1))
+  w = (1 - c)*w + c*v
+  ## Halley iteration
+  ##
+  for (n in 1:maxiter) {
+    p = exp(w)
+    t = w*p - z
+    f = (w != -1)
+    t = f*t/(p*(w + f) - 0.5*(w + 2.0)*t/(w + f))
+    w = w - t
+    if (abs(Re(t)) < (2.48*eps)*(1.0 + abs(Re(w)))
+        && abs(Im(t)) < (2.48*eps)*(1.0 + abs(Im(w))))
+      break
+  }
+  if (n==maxiter) warning(paste("iteration limit (",maxiter,
+                                ") reached, result of W may be inaccurate",sep=""))
+  if (all(Im(w)<min.imag)) w = as.numeric(w)
+  return(w)
+  
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = TRUE,
+    warning = TRUE)
+}
+
+# Does what it says on the tin, calculates pmax
+CalculateHurshPmax <- function(Q0_, alpha_, K_) {
+  (1/(Q0_ * alpha_ * K_^1.5)) * (0.083 * K_ + 0.65)
+}
+
+# Does what it says on the tin, calculates slope using Hursh's derivative equation
+CalculateHurshDerivative <- function(price_, Q0_, alpha_, K_) {
+  (log((10^K_)) * (-alpha_ * Q0_ * price_ * exp(-alpha_ * Q0_ * price_)))
+}
+
+SlopeLossFunction <- function(par, data) {
+  abs((log((10^data$K)) * (-data$A * data$Q0 * par[1] * exp(-data$A * data$Q0 * par[1]))) + 1)
+}
+
+SlopeDifferential <- function(Q0_, alpha_, K_) {
+  # Note, prices are in log-units to preserve the log-log comparison
+  prices <- seq(-2, 3, 0.001)
+  
+  # Consumption, with prices expressed with exponential changes
+  consumption <- log(Q0_)/log(10) + K_ * (exp(-alpha_ * Q0_ * 10^prices) - 1)
+  
+  # Calculate all deltas for consumption and divide by deltas in prices
+  slope <- diff(consumption)/diff(prices)
+  
+  # Modify slope
+  slope <- abs(slope + 1)
+  
+  # Find the smallest slope value (i.e., 0) and return the corresponding unit price
+  10^(prices[which.min(slope) + 1])  
+}
+
+GetSolution <- function(Q0_, K_, A_) {
+  starts <- CalculateHurshPmax(Q0_, A_, K_)
+  
+  dat <- data.frame(Q0 = Q0_,
+                    A = A_,
+                    K = K_) 
+  
+  result <- optimx::optimx(par = c(starts), 
+                           fn = SlopeLossFunction,
+                           data = dat,
+                           method = c("BFGS"),
+                           control=list(maxit=2500))
+  
+  return(result$p1)
+}
+
+knitr::opts_chunk$set(fig.width=8, 
+                      fig.height=4, 
+                      echo=FALSE, warning=TRUE, message=TRUE)
+
 ```
 
-## R Markdown
+```{r values, include = TRUE}
+# These values are used in all demonstrations
+Q0 <- 103.24
+alpha <- 0.000283586
+K <- 1.5
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+# Convenience frame, for storing multiple arguments in a single object
+dat <- data.frame(Q0 = Q0, 
+                  A = alpha, 
+                  K = K)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+# A relative starting point for numerical methods, bases off of Hursh's approximation
+START <- CalculateHurshPmax(Q0, alpha, K)
 ```
 
-## Including Plots
+# Plot of Demonstrated Demand Curve
 
-You can also embed plots, for example:
+For the case of this proposed example, the form of the demand curve discussed is illustrated below in log-log units (base 10 logarithm). The source code for producing this example, for the given model and parameters, is provided below:
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r, plotExp, fig.width=10}
+prices <- seq(0.1, 100, 0.01)
+consumption <- log(Q0)/log(10) + K * (exp(-alpha * Q0 * prices) - 1)
+
+# Normal demand curve plot
+plot(prices, consumption,
+     main = "Exponential Plot (Plotted Normally)",
+     yaxt = "n",
+     xaxt = "n",
+     ylab = "Consumption (Predicted)",
+     xlab = "Unit Price",
+     type = "l",
+     ylim = c(-1, 3),
+     log = "x")
+
+# Points
+priceP <- c(0.1,0.5,1,1.5,2,3,5,10,15,20,25)
+consP<-   c(100,100,100,90,80,70,60,50,40,30,10)
+
+# Log10 Coords
+consP<- log10(consP)
+
+points(priceP, consP, type = "p")
+
+# Custom axis for clarity
+atx <- c(0.1, 1, 10, 100, 1000)
+labels <- sapply(atx, function(i) as.expression(bquote(.(i))) )
+axis(1, at=atx, labels=labels)
+
+# Same as above
+aty <- c(-2, -1, 0, 1, 2, 3)
+labels2 <- sapply(aty, function(i) as.expression(bquote(.(10^i))) )
+axis(2, at=aty, labels=labels2)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+# Plot of Typical Predicted Slope (via Hursh's Derivative)
+
+The slope of the demand curve is (as typically reported) interpreted in log-log units. The shared unit space is necessary to satisfy conditions of unit elasticity (i.e., P<sub>MAX</sub>), where a <strong>one Log Unit in increase in price </strong> is accompanied by a <strong>one Log Unit of consumption decrease</strong>. As projected by the first order derivative provided by Hursh, the slope of the demand curve takes the following form.
+
+```{r, plotSlopeTypical, fig.width=10}
+prices <- seq(0.1, 100, 0.01)
+slope <- CalculateHurshDerivative(prices, Q0, alpha, K)
+
+# Plot of derivative values
+plot(prices, slope,
+     main = "Slope of Demand Curve",
+     xaxt = "n",
+     ylab = "Slope",
+     xlab = "Unit Price",
+     type = "l",
+     log = "x")
+
+# Custom axis for clarity
+atx <- c(0.1, 1, 10, 100, 1000)
+labels <- sapply(atx, function(i) as.expression(bquote(.(i))) )
+axis(1, at=atx, labels=labels)
+
+# Arrow to pmax
+arrows(5, 
+       -1, 
+       x1 = 15, 
+       y1 = -1,
+       code = 2)
+
+# Pmax text
+text(3, -1, labels = c("Pmax"))
+```
+
+This figure represents the slope of the demand curve across some domain of prices. It warrants highlighting that the P<sub>MAX</sub> is not easily discriminable from this plot alone. For this reason, the slope prediction can be modified to P<sub>MAX</sub> more discriminable to the eye (and to optimization methods).
+
+# Plot of Modified Slope Prediction (via Hursh's Derivative)
+
+The plot of the derivative of the demand curve provides the necessary information to determine where the slope of the curve reaches -1. However, these points can be made more visually apparent by plotting the absolute value of the derivative plus a constant of 1. By adding a constant of 1, the derivative with a value of -1 results in a value of zero. Also, by taking the absolute value, we can ensure that no other values can reach a point below zero. See below: 
+
+```{r, plotSlopeModified, fig.width=10}
+prices <- seq(0.1, 100, 0.01)
+slope <- CalculateHurshDerivative(prices, Q0, alpha, K)
+
+# Note: this is the operative change
+slope <- abs(slope + 1)
+
+# Plot of modified demand curve
+plot(prices, slope,
+     main = "Modified Slope of Demand Curve",
+     xaxt = "n",
+     ylab = "Slope",
+     xlab = "Unit Price",
+     type = "l",
+     log = "x")
+
+# Pretty axes
+atx <- c(0.1, 1, 10, 100, 1000)
+labels <- sapply(atx, function(i) as.expression(bquote(.(i))) )
+axis(1, at=atx, labels=labels)
+
+# Hursh's Pmax approximation, for reference
+HurshPMax <- CalculateHurshPmax(Q0, alpha, K)
+
+# Add point for H-Pmax
+points(CalculateHurshPmax(Q0, alpha, K), 0, 
+       col = "black", 
+       bg = "red", 
+       type = "p", 
+       pch = 21)
+
+# Arrow to H-Pmax
+arrows(5,
+       0.1,
+       x1 = 13,
+       y1 = 0.01,
+       code = 2)
+
+# H-Pmax text
+text(1, 0.125, labels = c("Hursh Approximated Pmax"))
+
+# Arrow to first zero value
+arrows(15.62583,
+       0.7,
+       x1 = 15.62583,
+       y1 = 0.1,
+       code = 2)
+
+# Label for derivative-based Pmax
+text(15, 0.8, labels = c("Derivative-based Pmax"))
+```
+
+In this modified form, the same derivative is plotted in such a way that only the P<sub>MAX</sub> can take the value of zero. In this way, optimization can proceed in search of the lowest point (i.e., 0) where P<sub>MAX</sub> exists. Howvever, this figure also makes it clear that slope is -1 at more than 1 point in the curve (in many cases). It is for this reason that Hursh's approximated P<sub>MAX</sub> is used as a starting point, as this value is usually approximate to the desired P<sub>MAX</sub> value.
+
+# P<sub>MAX</sub> Method 1: Numerical Approximation
+
+In the formula below, Hursh and colleagues proposed an approximated P<sub>MAX</sub> using fitted model parameters. This takes the following form: 
+
+$$ P_{MAX} = (1/(Q0 * alpha * K^{1.5})) * (0.083 * K + 0.65) $$
+
+```{r, pmax}
+(1/(Q0 * alpha * K^1.5)) * (0.083 * K + 0.65)    # Hursh's Regular Pmax Approximation
+```
+
+# P<sub>MAX</sub> Method 2: Slope Optimization (Hursh)
+
+This method uses the first order derivative provided by Hursh and colleagues to represent the slope of the demand curve. The derivative provided is as follows:
+
+$$ ln10^K*(-A*Q*x*e^{-A*Q*x}) $$
+
+Using a the modified slope (Modified Slope Prediction) as a loss function, the value of x (i.e., unit price) can be optimized to yield a unit price with minimal loss (i.e., slope at the zero point, where the derivative is -1). Identical to that of the Modified Slope Prediction, the form of the loss function is as follows:
+
+$$ Loss = |\ ln10^K*(-A*Q*x*e^{-A*Q*x}) + 1 \ |$$
+
+Using virtually any optimizer, with x (i.e., unit price) as the value to fit, the resulting parameter is the value at zero near the starting point. This is shown below:
+
+```{r, minimize}
+# This is the loss function noted above
+# par = paramters supplied (just one; x)
+# data = data frame with relevant parameters (Q0, alpha, K)
+lossFunction <- function(par, data) {
+  abs((log((10^data$K)) * (-data$A * data$Q0 * par[1] * exp(-data$A * data$Q0 * par[1]))) + 1)
+}
+
+# Optimization package included in R
+result = optimx::optimx(par = c(START),          # Note: Hursh's approximate Pmax is a desirable start point 
+                        fn = lossFunction, 
+                        data = dat,
+                        method = c("BFGS"),
+                        control=list(maxit=2500))
+
+result
+```
+
+As a result, the result of optimization reveals a P<sub>MAX</sub> that is very near the approximated P<sub>MAX</sub> value.
+
+# P<sub>MAX</sub> Method 3: Modeled Slope Differentials
+
+In a break from iterative methods altogether, slope differentials can be calculated numerically without using optimization methods. Using a "search"-type strategy, one can sample points along the demand curve and calculate a <strong>rough approximation</strong> of slope between sampled data points. However, it warrants strongly noting that even at high-resolution sampling (i.e., 0.0001 between points), this approach is fraught with possiblities for error and artifacts. An example how this can be done is performed below:
+
+```{r, differentials, fig.width=10}
+# Note, prices are in log-units to preserve the log-log comparison
+prices <- seq(-2, 3, 0.0001)
+
+# Consumption, with prices expressed with exponential changes
+consumption <- log(Q0)/log(10) + K * (exp(-alpha * Q0 * 10^prices) - 1)
+
+# Calculate all deltas for consumption and divide by deltas in prices
+slope <- diff(consumption)/diff(prices)
+
+# Modify slope
+slope <- abs(slope + 1)
+
+# Find the smallest slope value (i.e., 0) and return the corresponding unit price
+10^(prices[which.min(slope) + 1])
+```
+
+While approximate to other methods, it warrants noting that this approach is subject to many sources of error and bias, as the sampling resolution selected by the analyst can easily influence results.
+
+# P<sub>MAX</sub> Method 4: Analytical Solution
+
+As an alternative to optimization and search, P<sub>MAX</sub> can be calculated analytically. This can be performed when the derivative of the Exponential model of demand are rearranged to the point where slope is equal to negative one. In this equation (where Alpha, Q, and K are known), solving for X (unit price) where Y == -1 is challenging for several reasons. Principal among them, the presence of X inside and outside of the exponent warrants methods beyond basic calculus and elementary functions.
+
+To address this particular problem, solving for unit price in and out of the exponent can take place using the <strong>Lambert W</strong> function. This is also referred to as the omega function or the product logarithm, depending on the software you use. This logic can be applied to the first-order derivative provided by Hursh and colleagues, where unit price with a slope of -1 can be solve for. Using the principal branch of the W function, this calculation can be performed using the following calculation:
+
+$$ P_{MAX} = -W_0(-1/ln(10^k)) / (A*Q_0) $$
+
+```{r, pmaxExact}
+exactPmax <- -lambertW(z = -1/log((10^K)), b = 0) / (alpha * Q0)
+exactPmax
+```
+
+It warrants noting that this is essentially the exact solution for the derivative-based method (Method 2). This makes good sense from an analytic perspective, since this is just a solution to that problem without the need for optimization.
+
+# Simulated Demand and Comparisons
+
+To evaluate these various methods, a brief simulation was conducted using data from an Alcohol Purchase Task. The source to run, and replicate, these simulations is provided below:
+
+```{r, simulation, cache=TRUE, fig.width=10}
+# Using Beezdemand to screen for systematic data
+
+# Set seed for replicability
+set.seed(65535)
+
+# SD for residuals
+sdMap <- 0.5
+
+# maximum n series to simulate
+nPoints <- 1000
+
+# Apt data prices, means, sd's
+pricePoints <- c(0,0.25,0.5,1,1.5,2,2.5,3,4,5,6,7,8,9,10,15,20)
+
+# Data means from APT
+consumptionMean <- c(5.856884058,5.425724638,5.257246377,5.049818841,4.714673913,
+                     4.413043478,4.081521739,3.685688406,3.151268116,2.674818841,
+                     2.16576087,1.799637353,1.424818841,1.113327289,0.923913043,
+                     0.490942029,0.350543478)
+
+# Data sd's from APT
+consumptionSD <- c(4.705973278,4.301995389,4.194430187,3.938184029,3.70212462,
+                   3.457774816,3.262748553,3.018651843,2.808459372,2.470158851,
+                   2.252749078,2.349112958,1.78097839,1.733577022,1.699213558,
+                   1.189442317,0.900553209)
+
+# pre-allocate a frame
+preallocatedFrame <- data.frame(matrix(vector(),
+                                       nPoints,
+                                       length(pricePoints),
+                                       dimnames = list(c(),
+                                                       c(pricePoints))),
+                                stringsAsFactors = FALSE)
+
+# Naming conventions (they are odd with numerics)
+pricePointsName <- names(preallocatedFrame)
+
+for (i in 1:length(pricePointsName)) {
+  # Based on means/sds
+  preallocatedFrame[,pricePointsName[i]] <- rnorm(nPoints, mean=consumptionMean[i], sd=sdMap*consumptionSD[i])
+}
+
+# Restore colnames, add row #'s and columns for passes
+colnames(preallocatedFrame) <- pricePoints
+preallocatedFrame$row <- seq(from = 1, to = nrow(preallocatedFrame), by = 1)
+preallocatedFrame$pass <- NA
+
+# Round negatives to flat zero
+tempMat <- as.matrix(preallocatedFrame)
+tempMat[tempMat < 0] <- 0
+preallocatedFrame <- as.data.frame(tempMat)
+
+# Loop through beez to get # passing
+for (i in 1:nrow(preallocatedFrame)) {
+  test <- data.frame(id = rep(preallocatedFrame[i, "row"], length(pricePoints)),
+                     x = pricePoints,
+                     y = c(unname(unlist(preallocatedFrame[i, 1:17]))))
+  
+  preallocatedFrame[i, "pass"] <- beezdemand::CheckUnsystematic(test)$TotalPass
+}
+
+# Select series that hit all 3 passes
+passingSeriesFrame = preallocatedFrame[preallocatedFrame$pass == 3, 1:17]
+passingSeriesFrame$id <- 1:nrow(passingSeriesFrame)
+
+data = reshape::melt(passingSeriesFrame, id.vars = c("id"))
+colnames(data) <- c("id", "x", "y")
+
+# Switch to long-form, for beez
+data$id <- as.numeric(data$id)
+data$x <- as.numeric(data$x)
+data$y <- as.numeric(data$y)
+
+suppressWarnings(results <- beezdemand::FitCurves(data, equation = "hs", k = "ind", idcol = "id"))
+
+# Only pull relevant columns from beez results
+results <- results[, c("Q0d","K", "Alpha", "Pmaxd")]
+
+# Pre-allocate for speed
+compareFrame <- data.frame(id = 1:nrow(results))
+compareFrame$HurshPmax <- 0
+compareFrame$HurshDerivative <- 0
+compareFrame$SlopeDifferential <- 0
+compareFrame$AnalyticPmax <- 0
+
+compareFrame <- compareFrame[, 2:5]
+
+# Perform Measures
+for (i in 1:nrow(compareFrame)) {
+  compareFrame[i, "HurshPmax"] <- CalculateHurshPmax(results[i,"Q0d"], results[i,"Alpha"], results[i, "K"])
+  compareFrame[i, "HurshDerivative"] <- GetSolution(results[i,"Q0d"], results[i, "K"], results[i,"Alpha"])
+  compareFrame[i, "SlopeDifferential"] <- SlopeDifferential(results[i,"Q0d"], results[i,"Alpha"], results[i, "K"])
+  compareFrame[i, "AnalyticPmax"] <- -lambertW(z = -1/log((10^results[i, "K"]))) / (results[i,"Alpha"] * results[i,"Q0d"])
+}
+
+# Prepare boxplots, for descriptive summary
+suppressMessages(boxPlotData <- reshape2::melt(compareFrame))
+
+boxplot(value~variable,
+        data=boxPlotData, 
+        main="Pmax Calculations", 
+        ylim = c(0, 100),
+        xlab="Calculation Method", 
+        ylab="Pmax Value")
+
+# Correlations, to the sixth decimal
+correlationTable<-round(cor(compareFrame), 6)
+
+# Print out matrix
+correlationTableClean<-correlationTable
+correlationTableClean[lower.tri(correlationTable, diag=TRUE)]<-""
+correlationTableClean<-as.data.frame(correlationTableClean)
+correlationTableClean
+
+# Plots, Hursh Pmax Approximation
+par(oma=c(0,0,2,0))
+par(mfrow = c(1, 3))
+
+plot(compareFrame$HurshPmax, compareFrame$HurshDerivative, type = "p")
+abline(lm(compareFrame$HurshPmax ~ compareFrame$HurshDerivative), col = "red")
+
+plot(compareFrame$HurshPmax, compareFrame$SlopeDifferential, type = "p")
+abline(lm(compareFrame$HurshPmax ~ compareFrame$SlopeDifferential), col = "red")
+
+plot(compareFrame$HurshPmax, compareFrame$AnalyticPmax, type = "p")
+abline(lm(compareFrame$HurshPmax ~ compareFrame$AnalyticPmax), col = "red")
+
+title(main="Scatterplot of Approximated Pmax and Alteratives", outer=TRUE)
+
+# Plots, Hursh Derivative
+
+par(oma=c(0,0,2,0))
+par(mfrow = c(1, 3))
+
+plot(compareFrame$HurshDerivative,compareFrame$HurshPmax,type = "p")
+abline(lm(compareFrame$HurshDerivative ~ compareFrame$HurshPmax), col = "green")
+
+plot(compareFrame$HurshDerivative,compareFrame$SlopeDifferential,type = "p")
+abline(lm(compareFrame$HurshDerivative ~ compareFrame$SlopeDifferential), col = "green")
+
+plot(compareFrame$HurshDerivative,compareFrame$AnalyticPmax,type = "p")
+abline(lm(compareFrame$HurshDerivative ~ compareFrame$AnalyticPmax), col = "green")
+
+title(main="Scatterplot of Derivative-based Pmax and Alteratives", outer=TRUE)
+
+# Plots, Slope Differentials
+
+par(oma=c(0,0,2,0))
+par(mfrow = c(1, 3))
+
+plot(compareFrame$SlopeDifferential,compareFrame$HurshPmax,type = "p")
+abline(lm(compareFrame$SlopeDifferential ~ compareFrame$HurshPmax), col = "blue")
+
+plot(compareFrame$SlopeDifferential,compareFrame$HurshDerivative,type = "p")
+abline(lm(compareFrame$SlopeDifferential ~ compareFrame$HurshDerivative), col = "blue")
+
+plot(compareFrame$SlopeDifferential,compareFrame$AnalyticPmax,type = "p")
+abline(lm(compareFrame$SlopeDifferential ~ compareFrame$AnalyticPmax), col = "blue")
+
+title(main="Scatterplot of Slope-differential Pmax and Alteratives", outer=TRUE)
+
+```
+
+# Summary
+
+In sum, there are several major takeaways from this review/simulation.
+
+1. Hursh's approximated P<sub>MAX</sub> is nearly aways proximal to the value revealed from optimization using the derivative. This is good, as this value is easily computed with basic spreadsheet software.
+
+2. Hursh's approximated P<sub>MAX</sub> is highly similar to the derivative-based approach, however it tended to <strong>overestimate</strong> at lower extremes and <strong>underestimate</strong> at the upper extremes. This is of course, compared to the derivative approach, which is assumed to be an exact assessment of model slope.
+
+3. The analytical P<sub>MAX</sub> was correlated at 1 with the derivative-based approach, which required optimization. It is, for all intents and purposes, a suitable alternative for derivative-based optimization.
+
+4. The slope-differential approach was wildly prone to error, even at extreme precision. This approach does provide an alternative to analytical and optimization-based methods, but the results derived from this way should be interpreted critically, as there would likely be may artifacts introduced (i.e., potentially many or no slopes at -1).
