@@ -232,9 +232,9 @@ correlationTableClean
 # Plot Approximate vs. Derivative
 plot(compareFrame$HurshDerivative, 
      compareFrame$HurshPmax,
-     main = "Approximate and Derivative-based PMAX",
-     xlab = "Derivative-based PMAX",
-     ylab = "Approximated PMAX",
+     main = "Approximate and Derivative-based Methods",
+     xlab = "Derivative-based",
+     ylab = "Approximate",
      type = "p")
 abline(lm(compareFrame$HurshPmax ~ compareFrame$HurshDerivative), col = "red")
 
