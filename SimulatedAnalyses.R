@@ -1,6 +1,9 @@
+# Shawn Gilroy
+# GPL-V3
+# Pmax Evaluation
 
 # Perform Simulations?
-if (FALSE) {
+if (TRUE) {
   # Set seed for replicability
   set.seed(65535)
   
@@ -146,7 +149,7 @@ if (TRUE) {
   
   SlopeDifferential <- function(Q0_, alpha_, K_) {
     # Note, prices are in log-units to preserve the log-log comparison
-    prices <- seq(-2, 3, 0.001)
+    prices <- seq(-2, 3, 0.0001)
     
     # Consumption, with prices expressed with exponential changes
     consumption <- log(Q0_)/log(10) + K_ * (exp(-alpha_ * Q0_ * 10^prices) - 1)
@@ -159,6 +162,18 @@ if (TRUE) {
     
     # Find the smallest slope value (i.e., 0) and return the corresponding unit price
     10^(prices[which.min(slope) + 1])  
+  }
+  
+  ObservedPmax <- function(Q0_, alpha_, K_) {
+    # Note, prices are in log-units to preserve the log-log comparison
+    prices <- seq(-2, 3, 0.001)
+    
+    # Consumption, with prices expressed with exponential changes
+    consumption <- log(Q0_)/log(10) + K_ * (exp(-alpha_ * Q0_ * 10^prices) - 1)
+    
+    maxOutput <- prices * consumption
+    
+    10^(prices[which.max(maxOutput)])
   }
   
   GetSolution <- function(Q0_, K_, A_) {
@@ -178,6 +193,8 @@ if (TRUE) {
   }  
 }
 
+write.csv(passingSeriesFrame, "Results-Simulated Consumption.csv")
+
 # Prep for analysis
 data = reshape::melt(passingSeriesFrame, id.vars = c("id"))
   colnames(data) <- c("id", "x", "y")
@@ -188,13 +205,17 @@ data = reshape::melt(passingSeriesFrame, id.vars = c("id"))
   data$y <- as.numeric(data$y)
   
 results <- beezdemand::FitCurves(data, equation = "hs", k = "ind", idcol = "id")
+
+write.csv(results, "Results-Beezdemand.csv")
+
 results <- results[, c("Q0d","K", "Alpha", "Pmaxd")]
   
 # Pre-allocate for speed
 compareFrame <- data.frame(id = 1:nrow(results))
 compareFrame$HurshPmax <- NA
+compareFrame$ObservedPmax <- NA
 compareFrame$HurshDerivative <- NA
-compareFrame$SlopeDifferential <- NA
+#compareFrame$SlopeDifferential <- NA
 compareFrame$AnalyticPmax <- NA
 
 compareFrame <- compareFrame[, 2:5]
@@ -205,45 +226,9 @@ for (i in 1:nrow(compareFrame)) {
   
   compareFrame[i, "HurshPmax"] <- CalculateHurshPmax(results[i,"Q0d"], results[i,"Alpha"], results[i, "K"])
   compareFrame[i, "HurshDerivative"] <- GetSolution(results[i,"Q0d"], results[i, "K"], results[i,"Alpha"])
-  compareFrame[i, "SlopeDifferential"] <- SlopeDifferential(results[i,"Q0d"], results[i,"Alpha"], results[i, "K"])
+  #compareFrame[i, "SlopeDifferential"] <- SlopeDifferential(results[i,"Q0d"], results[i,"Alpha"], results[i, "K"])
+  compareFrame[i, "ObservedPmax"] <- ObservedPmax(results[i,"Q0d"], results[i,"Alpha"], results[i, "K"])
   compareFrame[i, "AnalyticPmax"] <- -lambertW(z = -1/log((10^results[i, "K"]))) / (results[i,"Alpha"] * results[i,"Q0d"])
 }
 
-# Prepare boxplots, for descriptive summary
-suppressMessages(boxPlotData <- reshape2::melt(compareFrame))
-
-boxplot(value~variable,
-        data=boxPlotData, 
-        main="Pmax Calculations", 
-        ylim = c(0, 100),
-        xlab="Calculation Method", 
-        ylab="Pmax Value")
-
-# Correlations, to the sixth decimal
-correlationTable<-round(cor(compareFrame), 6)
-
-# Print out matrix
-correlationTableClean<-correlationTable
-correlationTableClean[lower.tri(correlationTable, diag=TRUE)]<-""
-correlationTableClean<-as.data.frame(correlationTableClean)
-correlationTableClean
-
-# Figure 1
-# Plot Approximate vs. Derivative
-plot(compareFrame$HurshDerivative, 
-     compareFrame$HurshPmax,
-     main = "Approximate and Derivative-based Methods",
-     xlab = "Derivative-based",
-     ylab = "Approximate",
-     type = "p")
-abline(lm(compareFrame$HurshPmax ~ compareFrame$HurshDerivative), col = "red")
-
-# Figure 2
-# Plot Derivative vs. Analytical
-plot(compareFrame$HurshDerivative,
-     compareFrame$AnalyticPmax,
-     main = "Correlation of Approximated and Symbolic PMAX",
-     xlab = "Derivative-based Solution",
-     ylab = "Analytical Solution",
-     type = "p")
-abline(lm(compareFrame$AnalyticPmax ~ compareFrame$HurshDerivative), col = "green")
+write.csv(compareFrame, "Results-PMAX Comparisons.csv")
